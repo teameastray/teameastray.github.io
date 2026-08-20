@@ -231,6 +231,19 @@
   .cost-breakdown span b{color:#fff; font-weight:700;}
   @media (max-width:940px){ .cost-assump{grid-template-columns:1fr 1fr;} }
 
+  .lead-card{background:#fff; border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); padding:26px 28px; margin-top:22px;}
+  .lead-card h3{font-family:var(--font-display); font-size:17px; font-weight:700;}
+  .lead-card > p{font-size:13px; color:var(--muted); margin-top:6px; margin-bottom:18px;}
+  .lead-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:16px;}
+  .lead-grid input{border:1px solid var(--line); border-radius:9px; padding:10px 12px; font-size:14px; font-family:var(--font-body); width:100%;}
+  .lead-grid input:focus{outline:2px solid var(--blue); outline-offset:1px;}
+  .lead-error{display:none; color:#c23; font-size:12.5px; font-weight:600; margin-top:12px;}
+  .lead-error.show{display:block;}
+  .save-status{margin-top:14px; font-size:12.5px; color:var(--muted); font-family:var(--font-mono);}
+  .save-status.ok{color:#1a8f4c;}
+  .save-status.err{color:#c23;}
+  @media (max-width:700px){ .lead-grid{grid-template-columns:1fr;} }
+
   /* ---------- how it works ---------- */
   .steps{display:grid; grid-template-columns:repeat(4,1fr); gap:20px;}
   .step{padding:22px 0; border-top:2px solid var(--line);}
@@ -530,8 +543,29 @@
       <div class="cost-breakdown" id="costBreakdown"></div>
     </div>
 
-    <div style="text-align:center; margin-top:34px;">
-      <a href="#" id="waQuoteBtn" target="_blank" class="btn btn-primary" style="padding:16px 32px; font-size:15.5px;">Send this assessment to Eastray on WhatsApp →</a>
+    <div class="lead-card">
+      <h3>Get this quote — tell us who to send it to</h3>
+      <p>This saves your assessment to Eastray's records and prepares your WhatsApp message. Name and phone are required; everything else is optional.</p>
+      <div class="lead-grid">
+        <div class="assumption-field">
+          <label>Full name *</label>
+          <input type="text" id="leadName" placeholder="e.g. Chidi Okafor">
+        </div>
+        <div class="assumption-field">
+          <label>Phone / WhatsApp *</label>
+          <input type="tel" id="leadPhone" placeholder="e.g. 0803 000 0000">
+        </div>
+        <div class="assumption-field">
+          <label>Location (optional)</label>
+          <input type="text" id="leadLocation" placeholder="e.g. Awka, Anambra">
+        </div>
+      </div>
+      <p class="lead-error" id="leadError">Please enter your name and phone number so we can follow up.</p>
+    </div>
+
+    <div style="text-align:center; margin-top:28px;">
+      <a href="#" id="waQuoteBtn" target="_blank" class="btn btn-primary" style="padding:16px 32px; font-size:15.5px;">Save assessment &amp; send to Eastray on WhatsApp →</a>
+      <div class="save-status" id="saveStatus"></div>
     </div>
   </div>
 </section>
@@ -814,8 +848,84 @@ function compute(){
 
   // whatsapp quote link
   const msg = `Hi Eastray, I ran a load assessment on your site.%0A%0APackage: ${TIERS[currentTier].label}%0ADaily energy use: ${dailyKwh.toFixed(2)} kWh/day%0APeak demand: ${peakKw.toFixed(2)} kW%0ARecommended array: ${arrayKwp.toFixed(1)} kWp (${panelCount} panels)%0ABattery bank: ${batteryKwh.toFixed(1)} kWh%0AInverter: ${inverterKva} kVA%0AEstimated investment: ₦${Math.round(lowCost).toLocaleString()} - ₦${Math.round(highCost).toLocaleString()}%0A%0APlease send me a firm quote.`;
-  document.getElementById('waQuoteBtn').href = `https://wa.me/2349161229301?text=${msg}`;
+  const waHref = `https://wa.me/2349161229301?text=${msg}`;
+  document.getElementById('waQuoteBtn').href = waHref;
+
+  // keep the latest computed assessment available for the submit/save handler below
+  latestAssessment = {
+    tier: TIERS[currentTier].label,
+    connectedW: Math.round(connectedW),
+    peakKw: Number(peakKw.toFixed(2)),
+    dailyKwh: Number(dailyKwh.toFixed(2)),
+    monthlyKwh: Math.round(monthlyKwh),
+    arrayKwp: Number(arrayKwp.toFixed(2)),
+    panelCount, panelWatt,
+    batteryKwh: Number(batteryKwh.toFixed(2)),
+    autonomyDays: autonomy,
+    inverterKva,
+    sunHours,
+    rechargeHours: Number(rechargeHours.toFixed(2)),
+    costLow: Math.round(lowCost),
+    costHigh: Math.round(highCost),
+    applianceList: rows.map(r=>`${r.name} (x${r.qty}, ${r.watt}W, ${r.hrs}h/day)`).join('; '),
+    waHref
+  };
 }
+
+// ---------------- submission logging (Google Sheets webhook) ----------------
+// 1. Create a new Google Sheet.
+// 2. Extensions -> Apps Script -> paste the doPost script from the setup guide -> Deploy as Web App (access: Anyone).
+// 3. Paste the deployment URL below.
+const SHEET_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbzf0hceNR1kWqk5qM-iyoBtF7dg3qwlhaiKu-QZ0L7SiB2GyIcPRVrywX5V-K6tXRmf/exec";
+
+let latestAssessment = null;
+
+document.getElementById('waQuoteBtn').addEventListener('click', function(e){
+  e.preventDefault();
+  const name = document.getElementById('leadName').value.trim();
+  const phone = document.getElementById('leadPhone').value.trim();
+  const location = document.getElementById('leadLocation').value.trim();
+  const errEl = document.getElementById('leadError');
+  const statusEl = document.getElementById('saveStatus');
+
+  if(!name || !phone){
+    errEl.classList.add('show');
+    document.getElementById('leadName').focus();
+    return;
+  }
+  errEl.classList.remove('show');
+
+  const submission = {
+    timestamp: new Date().toISOString(),
+    name, phone, location,
+    ...latestAssessment
+  };
+
+  if(SHEET_WEBHOOK_URL.startsWith("PASTE_")){
+    statusEl.textContent = "⚠ Submission log not connected yet (see setup guide) — opening WhatsApp anyway.";
+    statusEl.className = 'save-status err';
+    window.open(latestAssessment.waHref, '_blank');
+    return;
+  }
+
+  statusEl.textContent = "Saving your assessment…";
+  statusEl.className = 'save-status';
+
+  fetch(SHEET_WEBHOOK_URL, {
+    method: 'POST',
+    mode: 'no-cors',
+    headers: {'Content-Type': 'text/plain'},
+    body: JSON.stringify(submission)
+  }).then(()=>{
+    statusEl.textContent = "✓ Assessment saved to Eastray's records.";
+    statusEl.className = 'save-status ok';
+  }).catch(()=>{
+    statusEl.textContent = "⚠ Couldn't save the log, but your WhatsApp message is ready.";
+    statusEl.className = 'save-status err';
+  }).finally(()=>{
+    window.open(latestAssessment.waHref, '_blank');
+  });
+});
 
 ['sunHours','autonomy','panelWatt','costPerKwp','costPerKwh','costPerKva','labourPct'].forEach(id=>{
   document.getElementById(id).addEventListener('input', compute);
